@@ -12,6 +12,7 @@ using LinearAlgebra: svd, norm
 using Statistics: mean
 using Random: GLOBAL_RNG, shuffle!
 using Base.Iterators: partition
+ENV["JULIA_CUDA_MEMORY_POOL"] = "none"
 using CUDA
 
 """
@@ -51,7 +52,7 @@ maskparams(nv::NeuroVertexDense) = Flux.params((nv.maskW, nv.maskb))
 function (m::NeuroVertexDense)(x)
     W, b, sigma, MW, Mb = Wb(m)..., m.layer.σ, m.maskW, m.maskb 
     if ndims(x) > 2
-        x = flatten(x)
+        x = Flux.flatten(x)
     end
     if m.preact
         out = (W .* MW) * sigma.(x) .+ b .* Mb
@@ -64,7 +65,7 @@ end
 function (m::NeuroVertexDense)(x, sigma)
     W, b, MW, Mb = Wb(m)..., m.maskW, m.maskb 
     if ndims(x) > 2
-        x = flatten(x)
+        x = Flux.flatten(x)
     end
     if m.preact
         out = (W .* MW) * sigma.(x) .+ b .* Mb
@@ -77,9 +78,9 @@ end
 function (m::NeuroVertexDense)(aux::AbstractMatrix, x::AbstractMatrix, old_x::AbstractArray, prevm::NeuroVertexDense)
     W, b, σ, MW, Mb = Wb(m)..., m.layer.σ, m.maskW, m.maskb 
     if m.preact
-        out = (W .* MW) * σ.(x) .+ b .* Mb .+ flatten(aux * flatten(σ.(old_x)))
+        out = (W .* MW) * σ.(x) .+ b .* Mb .+ Flux.flatten(aux * Flux.flatten(σ.(old_x)))
     else
-        out = σ.((W .* MW) * x .+ b .* Mb .+ flatten(σ.(aux * flatten(old_x))))
+        out = σ.((W .* MW) * x .+ b .* Mb .+ Flux.flatten(σ.(aux * Flux.flatten(old_x))))
     end
     return out
 end
@@ -198,13 +199,21 @@ maskparams(nv::NeuroVertexConv) = Flux.params((nv.maskW, nv.maskb))
 
 function (m::NeuroVertexConv)(x)
     W = m.layer.weight
+    # @show W
+    # if isnothing(x)==true
+    # x = reshape([(0:0)...], 2, 2, 2, 2)
+    # x = Array{Float32}(undef,0,0,0,0)
     σ, b, Mb = m.layer.σ, reshape(m.layer.bias, ntuple(_ -> 1, length(m.layer.stride))..., :, 1), reshape(m.maskb, ntuple(_ -> 1, length(m.layer.stride))..., :, 1)
+    # x = something(x,Float32(0))
+    # Arrx = cat(x,dims=4)
+    # push!(Arrx)
     cdims = DenseConvDims(x, W; stride = m.layer.stride, padding = m.layer.pad, dilation = m.layer.dilation, groups = m.layer.groups)
     if !m.preact
         out = m.maxpool(Mb .* σ.(conv(x, W, cdims) .+ b))
     else
         out = m.maxpool(Mb .* conv(σ.(m.batchnorm(x)), W, cdims) .+ b)
     end
+    # @show cdims 
     return out
 end
 
@@ -224,9 +233,9 @@ function (m::NeuroVertexDense)(aux::AbstractArray, x::AbstractArray, old_x::Abst
     W, b, σ, MW, Mb = Wb(m)..., m.layer.σ, m.maskW, m.maskb 
     cdimsaux  = DenseConvDims(old_x, aux; stride = prevm.layer.stride, padding = prevm.layer.pad, dilation = prevm.layer.dilation, groups = prevm.layer.groups)
     if !m.preact
-        return σ.((W .* MW) * flatten(x) .+ b .* Mb .+ flatten(prevm.maxpool(σ.(conv(old_x, aux, cdimsaux)))))
+        return σ.((W .* MW) * Flux.flatten(x) .+ b .* Mb .+ Flux.flatten(prevm.maxpool(σ.(conv(old_x, aux, cdimsaux)))))
     else
-        return (W .* MW) * flatten(σ.(x)) .+ b .* Mb .+ flatten(prevm.maxpool(conv(σ.(prevm.batchnorm(old_x)), aux, cdimsaux)))
+        return (W .* MW) * Flux.flatten(σ.(x)) .+ b .* Mb .+ Flux.flatten(prevm.maxpool(conv(σ.(prevm.batchnorm(old_x)), aux, cdimsaux)))
     end
 end
 
@@ -258,7 +267,7 @@ function Wmasked(m::NeuroVertexConv, outlast=true, flattenouts=false, flattenins
         Wmask = Wmask[:,:,getactiveinputindices(m),:]
     end
     if flattenouts
-        Wmask = flatten(Wmask)
+        Wmask = Flux.flatten(Wmask)
         if outlast
             Wmask = transpose(Wmask)
         end
@@ -266,7 +275,7 @@ function Wmasked(m::NeuroVertexConv, outlast=true, flattenouts=false, flattenins
         Wmask = permutedims(Wmask,(1,2,4,3))
     end
     if flattenins
-        Wmask = flatten(Wmask)
+        Wmask = Flux.flatten(Wmask)
     end
     return Wmask
 end
@@ -805,14 +814,24 @@ function NeuroSearchSpaceVGG11(activeratio::Float32, input::Tuple{Int,Int,Int}, 
     channels[2:end] *= 2
     channels[2:end] += tries[1:end-2]
     for i in 2:length(channels)
+        print("Hi there")
         nv = NeuroVertexConv((3,3), channels[i-1], channels[i], convactives[i-1], convactives[i], σ, rng, biasinit, maxpool = maxpool[i], pad = (1,1))
         push!(model, nv)
         acts.currentacts[i-1] = Matrix{Float32}(undef, 0, 0)
+        # if mockdata === nothing
+        #     continue
+        # end
         mockdata = model[end](mockdata)
+        @show mockdata
         if i < length(channels)
+            print("Yo")
             push!(auxs, zeros(Float32, 5, 5, channels[i-1], channels[i+1]))
         end
     end
+
+    # @show input
+    # mockdata = zeros(Float32, input...,1)
+    # mockdata = model[end](mockdata)
     conversion = size(mockdata)[1:2]
     widths = [prod(conversion)*channels[end], 4096, 4096, output]
     denseactives = copy(widths)
@@ -821,7 +840,8 @@ function NeuroSearchSpaceVGG11(activeratio::Float32, input::Tuple{Int,Int,Int}, 
     widths[2:end-1] *= 2
     widths[2:end-1] += tries[end-1:end]
     push!(auxs, zeros(Float32, 3, 3, channels[end-1], widths[2]))
-    mockdata = flatten(mockdata)
+    mockdata = Flux.flatten(mockdata)
+    # @show mockdata
     for i in 2:length(widths)
         if i == length(widths)
             sigma = identity
@@ -862,7 +882,7 @@ function NeuroVertexSequenceWRN28(maxinputchannels::Int, maxchannels::Int, initi
         pool = Chain(BatchNorm(maxchannels),
                      x -> σ.(x),
                      GlobalMeanPool(),
-                     x -> flatten(x))
+                     x -> Flux.flatten(x))
     else
         pool = Chain()
     end
