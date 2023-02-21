@@ -1,7 +1,7 @@
 using Neurogenesis
 using Flux
 using BSON
-using Zygote
+using ZygoteRules
 using Random
 using Statistics
 using LinearAlgebra
@@ -86,12 +86,13 @@ function ng(args)
                 end
             else
                 if args["decay"]
-                    opt = Flux.Optimiser(WeightDecay(0.1), Descent(args["lr"]))
+                    opt = Flux.Optimiser((WeightDecay(0.1)), Descent(args["lr"]))
                 else
                     opt = Descent(args["lr"])
                 end
             end
             if args["cosine"]
+                @show opt
                 opt = Flux.Optimiser(opt, CosineAnnealing(epochs))
             end
 
@@ -215,6 +216,7 @@ function ng(args)
             #initialize model
             if args["vgg"]
                 m = NeuroSearchSpaceVGG11(args["initmultiplier"], input, classes, tries, false, false, gmrelu)
+                print("in vgg")
                 [@show countactiveneurons(m.model[i]) for i in 1:length(max_hiddens)]
             elseif args["wrn"]
                 m = NeuroSearchSpaceWRN28(args["initmultiplier"], max_hiddens.+tries, input, classes, args["skipscale"], false, true, gmrelu)
@@ -292,10 +294,10 @@ function ng(args)
                     else
                         push!(xaxis, xaxis[end] + 1 / length(trainDL))
                     end
-                    ps = params(m)
+                    ps = Flux.params(m)
 
                     #main training step
-                    train_loss, back = Zygote.pullback(() -> Flux.logitcrossentropy(m(x, saveacts=saveacts), y), ps)
+                    train_loss, back = ZygoteRules.pullback(() -> Flux.logitcrossentropy(m(x, saveacts=saveacts), y), ps)
                     gs = back(one(train_loss))
                     Flux.Optimise.update!(opt, ps, gs)
 
@@ -310,7 +312,7 @@ function ng(args)
                         trigtimeCPU = @CPUelapsed begin
                             trigtime = @myelapsed device begin 
                                 if trigger == GSVDC
-                                    Ws = params([getweights(m.model[i]) for i in 1:length(m.model)])
+                                    Ws = Flux.params([getweights(m.model[i]) for i in 1:length(m.model)])
                                     push!(allgradnorm, norm(gs[W] for W in Ws))
                                     gradnorms = [gradnorm(m, i, gs[Ws[i]], gs[Ws[i+1]]) for i in 1:length(m.model)-1]
                                 elseif trigger == SVDACTS
@@ -399,7 +401,7 @@ function ng(args)
                                             S = nothing
                                             #grad[i] = similar(grad[i], 0, 0)
                                             if init !== NEST
-                                                gradi = nothing
+                                                gradi = nothing 
                                             elseif init !== GRADMAX
                                                 U = nothing
                                             end
