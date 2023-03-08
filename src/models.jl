@@ -166,6 +166,7 @@ struct NeuroVertexConv
 end
 
 function NeuroVertexConv(filter::Tuple, inputshape::Int, width::Int, inputactives::Int, actives::Int, σ = identity, rng = GLOBAL_RNG, biasinit::Bool = false; maxpool = false, stride = 1, pad = 0, dilation = 1, groups = 1, preact = false, batchnorm=false)
+    print("At Line 169")
     convmaskW = zeros(Int, width, inputshape)
     convmaskW[1:actives,1:inputactives] .= 1
     convmaskb = zeros(Int, width)
@@ -178,7 +179,8 @@ function NeuroVertexConv(filter::Tuple, inputshape::Int, width::Int, inputactive
     W[:,:,1:inputactives,1:actives] .= convfilter(filter, inputactives => actives)
     conv = Conv(W, true, σ, stride=stride, pad=pad, dilation=dilation, groups=groups)
     if maxpool
-        mp = Chain(MaxPool((2,2)))
+        print("Line 182")
+        mp = Chain(Flux.MaxPool((2,2)))
     else
         mp = Chain()
     end
@@ -196,24 +198,20 @@ Flux.trainable(nv::NeuroVertexConv) = Flux.trainable(nv.layer)
 layerparams(nv::NeuroVertexConv) = Flux.params(nv.layer)
 maskparams(nv::NeuroVertexConv) = Flux.params((nv.maskW, nv.maskb))
 
-
 function (m::NeuroVertexConv)(x)
     W = m.layer.weight
-    # @show W
-    # if isnothing(x)==true
-    # x = reshape([(0:0)...], 2, 2, 2, 2)
-    # x = Array{Float32}(undef,0,0,0,0)
+    # @show m.maxpool
     σ, b, Mb = m.layer.σ, reshape(m.layer.bias, ntuple(_ -> 1, length(m.layer.stride))..., :, 1), reshape(m.maskb, ntuple(_ -> 1, length(m.layer.stride))..., :, 1)
-    # x = something(x,Float32(0))
-    # Arrx = cat(x,dims=4)
-    # push!(Arrx)
     cdims = DenseConvDims(x, W; stride = m.layer.stride, padding = m.layer.pad, dilation = m.layer.dilation, groups = m.layer.groups)
-    if !m.preact
+    if !m.preact && m.maxpool == Chain(MaxPool((2,2)))
         out = m.maxpool(Mb .* σ.(conv(x, W, cdims) .+ b))
-    else
+    elseif !m.preact && m.maxpool == Chain()
+        out = Mb .* σ.(conv(x, W, cdims) .+ b)
+    elseif m.preact && m.maxpool == Chain(MaxPool((2,2)))
         out = m.maxpool(Mb .* conv(σ.(m.batchnorm(x)), W, cdims) .+ b)
+    elseif m.preact && m.maxpool == Chain()
+        out = Mb .* conv(σ.(m.batchnorm(x)), W, cdims) .+ b
     end
-    # @show cdims 
     return out
 end
 
@@ -715,6 +713,7 @@ struct NeuroSearchSpace
 end
 
 function NeuroSearchSpace(widths::AbstractVector{Int}, activeneurons::AbstractVector{Int}, σ = relu, rng = GLOBAL_RNG, biasinit::Bool = false)
+    print("Line 721")
     model = Vector{NeuroVertex}(undef, 0)
     acts = ActivationsStore(Dict{String,AbstractArray}())
     for i in 2:length(widths)
@@ -726,6 +725,7 @@ function NeuroSearchSpace(widths::AbstractVector{Int}, activeneurons::AbstractVe
 end
 
 function NeuroSearchSpace(hiddenwidths::AbstractVector{Int}, hiddenactives::AbstractVector{Int}, input::Int, output::Int, biasinit::Bool = false, σ = relu, rng = GLOBAL_RNG)
+    print("Line 733")
     model = Vector{NeuroVertex}(undef, 0)
     auxs = Vector{AbstractVecOrMat}(undef, 0)
     acts = ActivationsStore(Dict{String,AbstractArray}())
@@ -752,6 +752,7 @@ function NeuroSearchSpace(hiddenwidths::AbstractVector{Int}, hiddenactives::Abst
 end
 
 function NeuroSearchSpace(hiddenwidths::AbstractVector{Int}, hiddenactives::AbstractVector{Int}, input::Tuple{Int,Int,Int}, output::Int, kernels::AbstractVector{Tuple{Int,Int}}, biasinit::Bool = false, σ = relu, rng = GLOBAL_RNG)
+    print("Line 760")
     mockdata = zeros(Float32, input...,1)
     conversion = (-1,-1)
     model = Vector{NeuroVertex}(undef, 0)
@@ -814,24 +815,15 @@ function NeuroSearchSpaceVGG11(activeratio::Float32, input::Tuple{Int,Int,Int}, 
     channels[2:end] *= 2
     channels[2:end] += tries[1:end-2]
     for i in 2:length(channels)
-        print("Hi there")
         nv = NeuroVertexConv((3,3), channels[i-1], channels[i], convactives[i-1], convactives[i], σ, rng, biasinit, maxpool = maxpool[i], pad = (1,1))
         push!(model, nv)
         acts.currentacts[i-1] = Matrix{Float32}(undef, 0, 0)
-        # if mockdata === nothing
-        #     continue
-        # end
         mockdata = model[end](mockdata)
-        @show mockdata
         if i < length(channels)
-            print("Yo")
             push!(auxs, zeros(Float32, 5, 5, channels[i-1], channels[i+1]))
         end
     end
-
-    # @show input
-    # mockdata = zeros(Float32, input...,1)
-    # mockdata = model[end](mockdata)
+    print("Line 829")
     conversion = size(mockdata)[1:2]
     widths = [prod(conversion)*channels[end], 4096, 4096, output]
     denseactives = copy(widths)
@@ -853,6 +845,7 @@ function NeuroSearchSpaceVGG11(activeratio::Float32, input::Tuple{Int,Int,Int}, 
         push!(model, NeuroVertexDense(widths[i-1], widths[i], denseactives[i-1], denseactives[i], sigma, rng, biasinit))
         mockdata = model[end](mockdata)
     end
+    print("Line 864")
     NeuroSearchSpace(model, acts, auxs, conversion, cpu)
 end
 
